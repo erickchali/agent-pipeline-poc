@@ -41,7 +41,10 @@ jobs:
 
       - name: Review the diff
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Route the agent through OpenRouter. Only OPENROUTER_API_KEY is a secret.
+          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ""
         run: python -m scripts.agent_run review --base "origin/${BASE_REF}" --out "$RUNNER_TEMP/review.md"
 
       - name: Post the review

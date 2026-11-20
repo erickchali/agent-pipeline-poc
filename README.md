@@ -26,7 +26,10 @@ make check                       # the gate: lint, types, tests
 # Dry-run the orchestrator with the fake agent (no model, no key). Exits 4: "no changes".
 python -m scripts.agent_run --agent fake code --task docs/starter-issues/01-delete-note.md
 
-# Real run with Claude Code (needs the `claude` CLI and ANTHROPIC_API_KEY)
+# Real run with Claude Code through OpenRouter (needs the `claude` CLI)
+export ANTHROPIC_BASE_URL=https://openrouter.ai/api
+export ANTHROPIC_AUTH_TOKEN="<your OpenRouter key>"
+export ANTHROPIC_API_KEY=""      # must be empty
 git checkout -b agent/try-delete
 python -m scripts.agent_run --agent claude code \
   --task docs/starter-issues/01-delete-note.md --commit-message "Agent: delete endpoint"
@@ -35,7 +38,7 @@ python -m scripts.agent_run --agent claude code \
 python -m scripts.agent_run --agent claude review --base main --out review.md
 ```
 
-Or inside the sandbox container:
+Or inside the sandbox container (it reads `OPENROUTER_API_KEY` from your shell):
 
 ```bash
 docker compose run --rm sandbox python -m scripts.agent_run code --task docs/starter-issues/01-delete-note.md
@@ -69,7 +72,7 @@ Settings come from env vars: `AGENT`, `GATE_CMD`, `MAX_FIX_ROUNDS`, `GATE_TIMEOU
    - Repository permissions: **Contents**, **Issues**, **Pull requests**: read and write.
    - Create it, generate a private key, then install it on this repo only.
    - In this repo's Settings → Secrets and variables → Actions: add variable `AGENT_APP_ID` and secret `AGENT_APP_PRIVATE_KEY` (the whole `.pem` file).
-2. **The model key.** Add secret `ANTHROPIC_API_KEY`. To try the plumbing without a key, add variable `AGENT` = `fake`.
+2. **The model key.** Add secret `OPENROUTER_API_KEY`. The agent workflows route Claude Code through OpenRouter by setting `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and an empty `ANTHROPIC_API_KEY` in their `env:` blocks. To go direct to Anthropic instead, replace those three lines with `ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}`. To try the plumbing without any key, add variable `AGENT` = `fake`.
 3. **A label** named `agent`.
 4. **Branch protection on `main`:** require a pull request with 1 approval and the `check` status from CI. Agents never merge.
 5. **Optional manual gate for CD:** Settings → Environments → `production` → required reviewers.

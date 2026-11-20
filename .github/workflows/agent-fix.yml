@@ -57,7 +57,10 @@ jobs:
       - name: Run the orchestrator
         id: run
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Route the agent through OpenRouter. Only OPENROUTER_API_KEY is a secret.
+          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ""
         run: |
           git config user.name "agent-bot"
           git config user.email "agent-bot@users.noreply.github.com"
