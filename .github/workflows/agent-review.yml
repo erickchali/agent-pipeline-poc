@@ -1,0 +1,53 @@
+# Trigger: a PR is opened or updated. Read-only review, posted as one comment that's edited on
+# each update. Advisory only: don't make it a required check until it catches your past bugs.
+name: Agent review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: agent-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Same-repo PRs only: fork PRs get no secrets, and their diffs are untrusted input.
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      AGENT: ${{ vars.AGENT || 'claude' }}
+      BASE_REF: ${{ github.base_ref }}
+      PR: ${{ github.event.pull_request.number }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install agent CLI
+        if: env.AGENT == 'claude'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Review the diff
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python -m scripts.agent_run review --base "origin/${BASE_REF}" --out "$RUNNER_TEMP/review.md"
+
+      - name: Post the review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "### Agent review (${AGENT})"; echo; cat "$RUNNER_TEMP/review.md"; } > "$RUNNER_TEMP/comment.md"
+          gh pr comment "$PR" --edit-last --body-file "$RUNNER_TEMP/comment.md" \
+            || gh pr comment "$PR" --body-file "$RUNNER_TEMP/comment.md"

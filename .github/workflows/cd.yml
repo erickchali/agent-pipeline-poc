@@ -1,0 +1,88 @@
+# CD, simulated on the runner: build once, deploy to "staging", then a gated "production" canary
+# with automatic rollback. No agent anywhere in this file: releases are decided by fixed checks.
+# For real deploys, replace the `docker run` steps with your platform's deploy command.
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Build the image once
+        run: |
+          docker build -t notes-api:${{ github.event.workflow_run.head_sha }} .
+          docker save notes-api:${{ github.event.workflow_run.head_sha }} | gzip > image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: image.tar.gz
+
+  staging:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+      - name: Deploy to staging (simulated)
+        run: |
+          gunzip -c image.tar.gz | docker load
+          docker run -d --name staging -p 8000:8000 notes-api:${{ github.event.workflow_run.head_sha }}
+      - name: Smoke test
+        run: python3 -m scripts.smoke_check --url http://localhost:8000/health --requests 20
+
+  production:
+    needs: staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Add required reviewers to this environment in Settings > Environments for a manual gate.
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+      - name: Start the canary (simulated)
+        run: |
+          gunzip -c image.tar.gz | docker load
+          docker run -d --name canary -p 8001:8000 notes-api:${{ github.event.workflow_run.head_sha }}
+      - name: Canary check
+        id: canary
+        run: python3 -m scripts.smoke_check --url http://localhost:8001/health --requests 50 --max-error-rate 0.01
+      - name: Promote
+        if: steps.canary.outcome == 'success'
+        run: echo "Canary healthy. Promote to 100% here (simulated)."
+      - name: Roll back
+        if: failure()
+        run: |
+          docker rm -f canary || true
+          echo "Canary failed. Traffic stays on the previous release (simulated rollback)."

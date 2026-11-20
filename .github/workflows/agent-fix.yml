@@ -1,0 +1,97 @@
+# Trigger: CI fails on an agent branch. One fix attempt; the orchestrator enforces the limit.
+name: Agent fix
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+concurrency:
+  group: agent-fix-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      startsWith(github.event.workflow_run.head_branch, 'agent/') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read # to read the failed run's log
+    env:
+      AGENT: ${{ vars.AGENT || 'claude' }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          token: ${{ steps.app.outputs.token }}
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install toolchain and agent CLI
+        run: |
+          make install
+          if [ "$AGENT" = "claude" ]; then npm install -g @anthropic-ai/claude-code; fi
+
+      - name: Get the failing CI log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run view "$RUN_ID" --log-failed > "$RUNNER_TEMP/ci.log"
+
+      - name: Run the orchestrator
+        id: run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          git config user.name "agent-bot"
+          git config user.email "agent-bot@users.noreply.github.com"
+          set +e
+          python -m scripts.agent_run fix --log "$RUNNER_TEMP/ci.log"
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Push the fix (CI runs again)
+        if: steps.run.outputs.code == '0'
+        run: git push
+
+      - name: Hand back to a human
+        if: steps.run.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          CODE: ${{ steps.run.outputs.code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$CODE" in
+            1) why="the agent's fix still fails checks" ;;
+            3) why="CI still fails after one agent fix" ;;
+            4) why="the agent made no changes" ;;
+            5) why="the agent failed to run" ;;
+            *) why="unexpected exit code $CODE" ;;
+          esac
+          pr="$(gh pr list --head "$BRANCH" --json number -q '.[0].number')"
+          if [ -n "$pr" ]; then
+            gh pr comment "$pr" --body "Over to a human: ${why}. Log: ${RUN_URL}"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-runs-fix-${{ github.event.workflow_run.id }}
+          path: .agent-runs/
+          include-hidden-files: true
+          if-no-files-found: ignore

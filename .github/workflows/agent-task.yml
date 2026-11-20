@@ -1,0 +1,97 @@
+# Trigger: label an issue `agent`. The orchestrator implements it; this file only handles GitHub I/O.
+name: Agent task
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: agent-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    # Adding a label needs triage/write access, so only collaborators can start a run.
+    if: github.event.label.name == 'agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read # writes go through the app token, so CI runs on the agent's PR
+    env:
+      AGENT: ${{ vars.AGENT || 'claude' }}
+      # Issue text goes through env vars, never ${{ }} inside `run:` (script injection).
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_TITLE: ${{ github.event.issue.title }}
+      ISSUE_BODY: ${{ github.event.issue.body }}
+      BRANCH: agent/issue-${{ github.event.issue.number }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Pushes made with the default GITHUB_TOKEN don't trigger CI, so the agent pushes as an app.
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app.outputs.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install toolchain and agent CLI
+        run: |
+          make install
+          if [ "$AGENT" = "claude" ]; then npm install -g @anthropic-ai/claude-code; fi
+
+      - name: Write the task spec
+        run: printf '# %s\n\n%s\n' "$ISSUE_TITLE" "$ISSUE_BODY" > "$RUNNER_TEMP/task.md"
+
+      - name: Run the orchestrator
+        id: run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          git config user.name "agent-bot"
+          git config user.email "agent-bot@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          set +e
+          python -m scripts.agent_run code --task "$RUNNER_TEMP/task.md" \
+            --commit-message "Agent: ${ISSUE_TITLE} (#${ISSUE_NUMBER})"
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Push and open the PR
+        if: steps.run.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          git push -u origin "$BRANCH"
+          gh pr create --head "$BRANCH" \
+            --title "Agent: ${ISSUE_TITLE}" \
+            --body "Closes #${ISSUE_NUMBER}. Written by the agent (${AGENT}); needs human review before merge."
+
+      - name: Hand back to a human
+        if: steps.run.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          CODE: ${{ steps.run.outputs.code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$CODE" in
+            1) why="checks still fail after the allowed fix rounds" ;;
+            4) why="the agent made no changes" ;;
+            5) why="the agent failed to run" ;;
+            *) why="unexpected exit code $CODE" ;;
+          esac
+          gh issue comment "$ISSUE_NUMBER" --body "Agent run stopped: ${why}. Log: ${RUN_URL}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-runs-issue-${{ github.event.issue.number }}
+          path: .agent-runs/
+          include-hidden-files: true
+          if-no-files-found: ignore

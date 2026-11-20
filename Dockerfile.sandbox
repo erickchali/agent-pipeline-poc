@@ -1,0 +1,15 @@
+# The local sandbox: the repo's toolchain plus an agent CLI, isolated from your machine.
+# Swap the agent CLI line for any other agent; the orchestrator only needs an adapter for it.
+FROM python:3.12
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm make git \
+    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /workspace
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+RUN useradd --create-home agent
+USER agent
