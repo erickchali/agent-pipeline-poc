@@ -48,3 +48,12 @@ def get_note(note_id: int, session: SessionDep) -> Note:
     if note is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
     return note
+
+
+@app.delete("/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_note(note_id: int, session: SessionDep) -> None:
+    note = session.get(Note, note_id)
+    if note is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    session.delete(note)
+    session.commit()

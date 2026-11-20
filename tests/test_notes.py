@@ -30,5 +30,21 @@ def test_missing_note_returns_404(client: TestClient) -> None:
     assert client.get("/notes/999").status_code == 404
 
 
+def test_delete_note(client: TestClient) -> None:
+    keep_id = client.post("/notes", json={"title": "Keep"}).json()["id"]
+    note_id = client.post("/notes", json={"title": "Doomed"}).json()["id"]
+
+    deleted = client.delete(f"/notes/{note_id}")
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+
+    assert client.get(f"/notes/{note_id}").status_code == 404
+    assert [note["id"] for note in client.get("/notes").json()] == [keep_id]
+
+
+def test_delete_missing_note_returns_404(client: TestClient) -> None:
+    assert client.delete("/notes/999").status_code == 404
+
+
 def test_empty_title_is_rejected(client: TestClient) -> None:
     assert client.post("/notes", json={"title": ""}).status_code == 422
